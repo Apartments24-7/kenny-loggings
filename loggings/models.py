@@ -117,6 +117,11 @@ class Log(models.Model):
     def action_name(self):
         return ACTION_TO_STRING[self.action]
 
+    def create_manual_extra(self, field_name, field_value):
+        extra, _ = LogExtra.objects.get_or_create(
+            log_id=self.id, field_name=field_name, field_value=field_value)
+        return extra
+
 
 class LogExtra(models.Model):
     """

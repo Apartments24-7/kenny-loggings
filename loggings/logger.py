@@ -30,7 +30,7 @@ class Logger(object):
     user = None
 
     def __init__(self, action, current_obj, previous_obj=None, user=None,
-                 extras=None):
+                 extras=None, manual_extras=None):
 
         try:
             action = int(action)
@@ -92,6 +92,7 @@ class Logger(object):
                             "current instance.".format(extra))
 
             self.extras = extras
+        self.manual_extras = manual_extras
 
     def _create_extra_logs(self, log):
         for field in (self.extras or []):
@@ -112,6 +113,10 @@ class Logger(object):
                 field_name=field_name,
                 field_value=getattr(obj, field_name)
             )
+
+    def _create_manual_extras(self, log_id):
+        for field, val in (self.manual_extras or {}).items():
+            Logger.create_manual_extra(log_id, field, val)
 
     def create(self):
         model = type(self.current_obj)
@@ -245,8 +250,6 @@ class Logger(object):
         * field_value = The value, usually a primary key of the object you
                         wish to reference.
         """
-        log = Log.objects.get(pk=log_id)
-
-        extra = LogExtra.objects.create(
-            log_id=log.pk, field_name=field_name, field_value=field_value)
+        extra, _ = LogExtra.objects.get_or_create(
+            log_id=log_id, field_name=field_name, field_value=field_value)
         return extra
