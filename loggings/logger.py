@@ -229,8 +229,7 @@ class Logger(object):
 
         # Delete redundant logs
         if to_delete:
-            res = Log.objects.filter(pk__in=to_delete).delete()
-            print("Deleted logs", res)
+            Log.objects.filter(pk__in=to_delete).delete()
             updated_log_ids = [pk for pk in prev_log_ids if pk not in to_delete]
         return resultant_log, updated_log_ids
 
