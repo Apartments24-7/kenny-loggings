@@ -6,7 +6,8 @@ from django.core import serializers
 from django.db.models import Model
 
 from .constants import ACTION_CREATE, ACTION_DELETE, ACTION_UPDATE
-from .models import Log, LogExtra
+from .helpers import create_extra, normalize_extras
+from .models import Log
 
 
 # Stored log id's per model instance, for use with squashing a log sequence
@@ -38,8 +39,7 @@ class Logger(object):
             raise ValueError("Action must be an integer.")
 
         if action not in self.actions:
-            raise Exception(
-                "Action must be an integer in {0}".format(self.actions))
+            raise Exception(f"Action must be an integer in {self.actions}")
         self.action = action
 
         if not isinstance(current_obj, Model):
@@ -48,8 +48,7 @@ class Logger(object):
 
         if previous_obj:
             if not isinstance(previous_obj, Model):
-                raise TypeError(
-                    "previous_obj must be a Django model instance.")
+                raise TypeError("previous_obj must be a Django model instance.")
 
             if previous_obj._meta.app_label != self.current_obj._meta.app_label:
                 raise Exception("current_obj and previous_obj must be from "
@@ -61,62 +60,12 @@ class Logger(object):
 
             self.previous_obj = previous_obj
 
-        if user:
-            self.user = user
-
-        if extras:
-            if not isinstance(extras, list):
-                raise TypeError("extras must be a list.")
-
-            for extra in extras:
-                if len(extra.split("__")) > 1:
-                    steps = extra.split("__")[:-1]
-                    obj = self.current_obj
-
-                    for step in steps:
-                        if not hasattr(obj, step):
-                            raise Exception(
-                                "'%s' in %s is not a valid attribute." % (
-                                    step, extra))
-
-                        if not isinstance(getattr(obj, step), Model):
-                            raise Exception(
-                                "'{0}' in {1} is not a subclass of "
-                                "django.db.models.Model.".format(step, extra))
-
-                        obj = getattr(obj, step)
-                else:
-                    if not hasattr(self.current_obj, extra):
-                        raise Exception(
-                            "The attribute '{0}' does not exist on the "
-                            "current instance.".format(extra))
-
-            self.extras = extras
-        self.manual_extras = manual_extras
+        self.user = user
+        self.extras = normalize_extras(current_obj, extras, manual_extras)
 
     def _create_extra_logs(self, log):
-        for field in (self.extras or []):
-            obj = self.current_obj
-
-            if len(field.split("__")) > 1:
-                steps = field.split("__")
-                field_name = steps.pop(-1)
-
-                for step in steps:
-                    obj = getattr(obj, step)
-            else:
-                field_name = field
-
-            # Avoid duplicate extras
-            LogExtra.objects.get_or_create(
-                log=log,
-                field_name=field_name,
-                field_value=getattr(obj, field_name)
-            )
-
-    def _create_manual_extras(self, log_id):
-        for field, val in (self.manual_extras or {}).items():
-            Logger.create_manual_extra(log_id, field, val)
+        for field_name, value in self.extras:
+            create_extra(log.id, field_name, value)
 
     def create(self):
         model = type(self.current_obj)
@@ -153,7 +102,7 @@ class Logger(object):
         else:
             # A log history sequence exists - squash them if possible
             log, updated_log_ids = self.squash_log_sequence(
-                log, log_sequences.get(log_key, []))
+                log, log_sequences.get(log_key, []), extras=self.extras)
             log_sequences[log_key] = updated_log_ids
 
         # Save log & append to history
@@ -173,7 +122,7 @@ class Logger(object):
 
 
     @classmethod
-    def squash_log_sequence(cls, log, prev_log_ids):
+    def squash_log_sequence(cls, log, prev_log_ids, extras=None):
         """Given a non-persistant log & the ids of existing logs in the sequence, squash sequential
            logs into a resultant log.  Returns the updated log, and the updated list of log id's"""
         # The final, squashed log
@@ -186,7 +135,7 @@ class Logger(object):
         # Get previous logs of the same model instance
         if prev_logs := Log.objects.filter(id__in=prev_log_ids).order_by("-timestamp"):
             # A DELETE nullifies previous logs in the sequence - remove them.
-            if log.action == ACTION_DELETE:
+            if log.is_delete:
                 for prev_log in prev_logs:
                     # Only squash if logs have the same user_id
                     if prev_log.user_id == log.user_id:
@@ -197,20 +146,30 @@ class Logger(object):
             # An UPDATE log can squash its changes onto previous update logs to the same
             # object. For example - a CREATE, followed by 3 UPDATES, would squash down to a single
             # CREATE.
-            elif log.action == ACTION_UPDATE:
+            elif log.is_update:
                 # Readable alias for iterating
                 current_log = log
 
                 for prev_log in prev_logs:
+                    # Sanity check! There should never exist a log:
+                    #   - before CREATE (the birth of an obj)
+                    #   - after DELETE  (the death of an obj)
+                    if current_log.is_create or prev_log.is_delete:
+                        raise AssertionError(
+                            f"Previous log {prev_log.id}: {prev_log.action_name}, "
+                            f"Current log {current_log.id} {current_log.action_name}")
+
                     # Only squash logs with the same user_id
                     if prev_log.user_id != log.user_id:
                         break
 
-                    # Sanity check
-                    if prev_log.action == ACTION_DELETE or current_log.action == ACTION_CREATE:
-                        # This should be impossible
-                        raise AssertionError(f"Previous log {prev_log.id}: {prev_log.action}, "
-                                             f"Current log {current_log.id} {current_log.action}")
+                    # Only squash logs with the same extras
+                    prev_extras = set([
+                        f"{ex.field_name} {ex.field_value}" for ex in prev_log.extras.all()])
+                    current_extras = set([f"{field} {value}" for field, value in (extras or [])])
+                    if prev_extras.difference(current_extras):
+                        break
+
                     # Extract changes
                     curr_log_dict = current_log.current_obj_dict
                     prev_log_dict = prev_log.current_obj_dict
@@ -250,6 +209,4 @@ class Logger(object):
         * field_value = The value, usually a primary key of the object you
                         wish to reference.
         """
-        extra, _ = LogExtra.objects.get_or_create(
-            log_id=log_id, field_name=field_name, field_value=field_value)
-        return extra
+        return create_extra(log_id, field_name, field_value)

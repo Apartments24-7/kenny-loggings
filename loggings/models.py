@@ -1,13 +1,10 @@
-try:
-    import json
-except ImportError:
-    from django.utils import simplejson as json
+import json
 
 from django.apps import apps
 from django.db import models
 from django.contrib.auth.models import User
 
-from .constants import ACTION_TO_STRING
+from .constants import ACTION_CREATE, ACTION_DELETE, ACTION_UPDATE, ACTION_TO_STRING
 
 
 class Log(models.Model):
@@ -47,6 +44,18 @@ class Log(models.Model):
             self.timestamp)
             if p
         ])
+
+    @property
+    def is_create(self):
+        return self.action == ACTION_CREATE
+
+    @property
+    def is_update(self):
+        return self.action == ACTION_UPDATE
+
+    @property
+    def is_delete(self):
+        return self.action == ACTION_DELETE
 
     @property
     def django_user(self):
@@ -116,11 +125,6 @@ class Log(models.Model):
     @property
     def action_name(self):
         return ACTION_TO_STRING[self.action]
-
-    def create_manual_extra(self, field_name, field_value):
-        extra, _ = LogExtra.objects.get_or_create(
-            log_id=self.id, field_name=field_name, field_value=field_value)
-        return extra
 
 
 class LogExtra(models.Model):
