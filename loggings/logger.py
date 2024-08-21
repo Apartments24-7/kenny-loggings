@@ -10,17 +10,17 @@ from .models import Log, LogExtra
 
 
 # Stored log id's per model instance, for use with squashing a log sequence
-log_history = contextvars.ContextVar("loggings__log_history")
+_log_sequence_context = contextvars.ContextVar("loggings___log_sequence")
 
 
 def begin_log_sequence():
     """Begin recording log id's per model instance."""
-    return log_history.set(defaultdict(list))
+    return _log_sequence_context.set(defaultdict(list))
 
 
 def end_log_sequence(token):
     """End recording log id's per model instance."""
-    log_history.reset(token)
+    _log_sequence_context.reset(token)
 
 
 class Logger(object):
@@ -94,7 +94,7 @@ class Logger(object):
             self.extras = extras
 
     def _create_extra_logs(self, log):
-        for field in self.extras:
+        for field in (self.extras or []):
             obj = self.current_obj
 
             if len(field.split("__")) > 1:
@@ -106,7 +106,8 @@ class Logger(object):
             else:
                 field_name = field
 
-            LogExtra.objects.create(
+            # Avoid duplicate extras
+            LogExtra.objects.get_or_create(
                 log=log,
                 field_name=field_name,
                 field_value=getattr(obj, field_name)
@@ -140,74 +141,98 @@ class Logger(object):
         # Unique identifier for a model instance
         log_key = "{0.app_name}-{0.model_name}-{0.model_instance_pk}".format(log)
         try:
-            log_history_storage = log_history.get()
+            log_sequences = _log_sequence_context.get()
         except LookupError:
             # No log sequence context was started - do not squash logs
-            log_history_storage = None
-            squashed_log = None
+            log_sequences = None
         else:
             # A log history sequence exists - squash them if possible
-            squashed_log, updated_log_ids = self.squash_log_sequence(
-                log, log_history_storage.get(log_key, []))
-            log_history_storage[log_key] = updated_log_ids
+            log, updated_log_ids = self.squash_log_sequence(
+                log, log_sequences.get(log_key, []))
+            log_sequences[log_key] = updated_log_ids
 
-        if squashed_log:
-            # Store the new log sequence
-            log_history.set(log_history_storage)
-            return squashed_log
-        else:
+        # Save log & append to history
+        if log:
+            created = not log.pk
             log.save()
-            if log_history_storage is not None:
-                log_history_storage[log_key].append(log.id)
-                # Store the new log sequence
-                log_history.set(log_history_storage)
+            self._create_extra_logs(log)
 
-            if self.extras:
-                self._create_extra_logs(log)
-            return log
+            if created and log_sequences is not None:
+                log_sequences[log_key].append(log.id)
+
+        # Store the new log sequence
+        if log_sequences is not None:
+            _log_sequence_context.set(log_sequences)
+
+        return log
+
 
     @classmethod
     def squash_log_sequence(cls, log, prev_log_ids):
         """Given a non-persistant log & the ids of existing logs in the sequence, squash sequential
            logs into a resultant log.  Returns the updated log, and the updated list of log id's"""
-        squashed_log = None
+        # The final, squashed log
+        resultant_log = log
+        # Logs to delete after combining
+        to_delete = set()
+        # The new log sequence
         updated_log_ids = prev_log_ids
 
         # Get previous logs of the same model instance
         if prev_logs := Log.objects.filter(id__in=prev_log_ids).order_by("-timestamp"):
             # A DELETE nullifies previous logs in the sequence - remove them.
             if log.action == ACTION_DELETE:
-                prev_logs.delete()
-                updated_log_ids = []
+                for prev_log in prev_logs:
+                    # Only squash if logs have the same user_id
+                    if prev_log.user_id == log.user_id:
+                        to_delete.add(prev_log.id)
+                    else:
+                        break
 
             # An UPDATE log can squash its changes onto previous update logs to the same
             # object. For example - a CREATE, followed by 3 UPDATES, would squash down to a single
             # CREATE.
             elif log.action == ACTION_UPDATE:
+                # Readable alias for iterating
                 current_log = log
-                # Logs to delete after combining
-                to_delete = []
+
                 for prev_log in prev_logs:
+                    # Only squash logs with the same user_id
+                    if prev_log.user_id != log.user_id:
+                        break
+
                     # Sanity check
                     if prev_log.action == ACTION_DELETE or current_log.action == ACTION_CREATE:
                         # This should be impossible
                         raise AssertionError(f"Previous log {prev_log.id}: {prev_log.action}, "
                                              f"Current log {current_log.id} {current_log.action}")
-                    curr_log_dict = json.loads(current_log.current_json_blob)
-                    prev_log_dict = json.loads(prev_log.current_json_blob)
-                    # Update prev log with this log's changes
-                    prev_log_dict[0]["fields"].update(curr_log_dict[0]["fields"])
-                    if current_log.id:
-                        to_delete.append(current_log.id)
-                    current_log = prev_log
-                current_log.save()
-                squashed_log = current_log
-                # Delete redundant logs
-                if to_delete:
-                    prev_logs.filter(pk__in=to_delete).delete()
-                updated_log_ids = [pk for pk in prev_log_ids if pk not in to_delete]
+                    # Extract changes
+                    curr_log_dict = current_log.current_obj_dict
+                    prev_log_dict = prev_log.current_obj_dict
 
-        return squashed_log, updated_log_ids
+                    # Squash current log onto prev log
+                    prev_log_dict["fields"].update(curr_log_dict["fields"])
+                    prev_log.current_json_blob = json.dumps([prev_log_dict])
+
+                    # Record current log for deletion
+                    if current_log.id:
+                        to_delete.add(current_log.id)
+
+                    # Keep reference to the previous item
+                    current_log = resultant_log = prev_log
+
+            # Squashing 2 logs may cancel each other's changes, such as flipping a bool, twice
+            if resultant_log.current_json_blob == resultant_log.previous_json_blob:
+                if resultant_log.pk:
+                    to_delete.add(resultant_log.pk)
+                resultant_log = None
+
+        # Delete redundant logs
+        if to_delete:
+            res = Log.objects.filter(pk__in=to_delete).delete()
+            print("Deleted logs", res)
+            updated_log_ids = [pk for pk in prev_log_ids if pk not in to_delete]
+        return resultant_log, updated_log_ids
 
 
     @classmethod
