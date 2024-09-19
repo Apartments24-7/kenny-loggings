@@ -13,19 +13,19 @@ class Log(models.Model):
     app_name = models.CharField(
         blank=True,
         db_index=True,
-        default='',
+        default="",
         max_length=255
     )
     model_name = models.CharField(
         blank=True,
         db_index=True,
-        default='',
+        default="",
         max_length=255
     )
     model_instance_pk = models.CharField(
         blank=True,
         db_index=True,
-        default='',
+        default="",
         max_length=255
     )
     timestamp = models.DateTimeField(auto_now_add=True, db_index=True)

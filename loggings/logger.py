@@ -1,12 +1,12 @@
+from copy import deepcopy
 from collections import defaultdict
 import contextvars
 import json
 
-from django.core import serializers
 from django.db.models import Model
 
 from .constants import ACTION_CREATE, ACTION_DELETE, ACTION_UPDATE
-from .helpers import create_extra, normalize_extras
+from .helpers import create_extra, normalize_extras, serialize_obj
 from .models import Log
 
 
@@ -44,20 +44,16 @@ class Logger(object):
 
         if not isinstance(current_obj, Model):
             raise TypeError("current_obj must be a Django model instance.")
-        self.current_obj = current_obj
+
+        # Use a fresh db copy, so that fields will be pre-converted (to_python())
+        # This will minimize false diffs when logging
+        self.current_obj = deepcopy(current_obj)
+        self.current_obj.refresh_from_db()
 
         if previous_obj:
-            if not isinstance(previous_obj, Model):
-                raise TypeError("previous_obj must be a Django model instance.")
-
-            if previous_obj._meta.app_label != self.current_obj._meta.app_label:
-                raise Exception("current_obj and previous_obj must be from "
-                                "the same Django app.")
-
-            if previous_obj._meta.object_name != self.current_obj._meta.object_name:
-                raise Exception("current_obj and previous_obj must be "
-                                "instances of the same Django model.")
-
+            if not isinstance(previous_obj, type(self.current_obj)):
+                raise TypeError("current_obj and previous_obj must be instances of the same "
+                                "Django model.")
             self.previous_obj = previous_obj
 
         self.user = user
@@ -77,13 +73,11 @@ class Logger(object):
             app_name=self.current_obj._meta.app_label,
             model_name=self.current_obj._meta.object_name,
             model_instance_pk=self.current_obj.pk,
-            current_json_blob=serializers.serialize("json", [self.current_obj],
-                                                    fields=fields)
+            current_json_blob=serialize_obj(self.current_obj, fields=fields)
         )
 
         if self.previous_obj:
-            log.previous_json_blob = serializers.serialize(
-                "json", [self.previous_obj], fields=fields)
+            log.previous_json_blob = serialize_obj(self.previous_obj, fields=fields)
 
         if self.user:
             log.user_id = self.user.pk

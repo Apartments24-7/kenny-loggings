@@ -1,3 +1,7 @@
+import json
+
+from django.core import serializers
+
 from .models import LogExtra
 
 
@@ -35,3 +39,11 @@ def create_extra(log_id, field_name, value):
         field_value=value
     )
     return log
+
+
+def serialize_obj(obj, **kwargs):
+    """Convert model instance to JSON"""
+    # serialize() requires a iterable
+    js_obj = serializers.serialize("json", [obj], **kwargs)
+    dict_obj = json.loads(js_obj)[0]
+    return json.dumps(dict_obj)
