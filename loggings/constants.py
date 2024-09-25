@@ -3,8 +3,7 @@ ACTION_UPDATE = 2
 ACTION_DELETE = 3
 
 ACTION_TO_STRING = {
-    1: "create",
-    2: "update",
-    3: "delete"
+    ACTION_CREATE: "create",
+    ACTION_UPDATE: "update",
+    ACTION_DELETE: "delete"
 }
-
