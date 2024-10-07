@@ -31,7 +31,7 @@ class Logger(object):
     user = None
 
     def __init__(self, action, current_obj, previous_obj=None, user=None,
-                 extras=None, manual_extras=None):
+                 current_obj_json=None, previous_obj_json=None, extras=None, manual_extras=None):
 
         try:
             action = int(action)
@@ -49,7 +49,9 @@ class Logger(object):
         # This will minimize false diffs when logging
         self.current_obj = deepcopy(current_obj)
         self.current_obj.refresh_from_db()
+        self.current_obj_json = current_obj_json
 
+        self.previous_obj_json = previous_obj_json
         if previous_obj:
             if not isinstance(previous_obj, type(self.current_obj)):
                 raise TypeError("current_obj and previous_obj must be instances of the same "
@@ -73,11 +75,13 @@ class Logger(object):
             app_name=self.current_obj._meta.app_label,
             model_name=self.current_obj._meta.object_name,
             model_instance_pk=self.current_obj.pk,
-            current_json_blob=serialize_obj(self.current_obj, fields=fields)
+            current_json_blob=(
+                self.current_obj_json or serialize_obj(self.current_obj, fields=fields))
         )
 
         if self.previous_obj:
-            log.previous_json_blob = serialize_obj(self.previous_obj, fields=fields)
+            log.previous_json_blob = (self.previous_obj_json
+                                      or serialize_obj(self.previous_obj, fields=fields))
 
         if self.user:
             log.user_id = self.user.pk
@@ -170,7 +174,7 @@ class Logger(object):
 
                     # Squash current log onto prev log
                     prev_log_dict["fields"].update(curr_log_dict["fields"])
-                    prev_log.current_json_blob = json.dumps([prev_log_dict])
+                    prev_log.current_json_blob = json.dumps(prev_log_dict)
 
                     # Record current log for deletion
                     if current_log.id:
