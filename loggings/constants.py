@@ -1,3 +1,9 @@
 ACTION_CREATE = 1
 ACTION_UPDATE = 2
 ACTION_DELETE = 3
+
+ACTION_TO_STRING = {
+    ACTION_CREATE: "create",
+    ACTION_UPDATE: "update",
+    ACTION_DELETE: "delete"
+}

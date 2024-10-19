@@ -45,7 +45,7 @@ class LogUpdateObjectMixin(LogModelObject):
         Call super to save changes to the object.
         Log the old and current objects.
         """
-        old_object = self.model.objects.get(pk=self.object.pk)
+        old_object = type(self.object).objects.get(pk=self.object.pk)
 
         response = super(LogUpdateObjectMixin, self).form_valid(form)
 
