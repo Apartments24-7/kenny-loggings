@@ -1,5 +1,5 @@
 __title__ = 'loggings'
-__version__ = '1.0.0'
+__version__ = '1.1.1'
 __author__ = 'Chris Jones and Kenneth Love'
 __license__ = 'BSD 3-clause'
 __copyright__ = 'Copyright 2013 Chris Jones and Kenneth Love'
